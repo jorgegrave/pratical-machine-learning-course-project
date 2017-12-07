@@ -1,0 +1,155 @@
+---
+title: "Predicting Errors in a Weighlift Exercise"
+author: "Jorge Grave"
+date: "December 7, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(caret)
+library(parallel)
+library(doParallel)
+```
+
+## Summary
+
+We have used a dataset with sensor measurements obtained during weighlifting exercises in order to try to predict the class of the exercise being performed. We fitted 3 different models to the data and the best fit yielded an estmated out of sample accuracy of 99.8%.
+
+## Loading Data and Preprocessing
+
+In this project, we have used the dataset WLE from Veloso et al. (2013) in order to predict if a person is performing a weighlifting exercise correctly or not, taking into account data from different sensors in their body. More specifically, we tried to predict the level of the factor variable "classe" which indicated if the exercise was correct (A) or incorrect (levels B to E). We started by loading the data and checking its dimensions and the number of missing values.
+
+```{r loading, cache=TRUE}
+set.seed(10)
+DS <- read.csv('pml-training.csv')
+```
+
+```{r number of NAs}
+dim(DS)
+sum(is.na(DS))
+```
+
+We could see that the dataset had 160 variables, including our outcome and that there were a lot of missing data, so before building our models, we did some preprocessing on the data in order to reduce its size and make it more manageable to input in our models. For example, we could see highly correlated variables in the data like variance and standard deviation of a certain measurement, as shown in the next plot:
+```{r corplot}
+plot(DS$stddev_pitch_arm,DS$var_pitch_arm, 
+     main="Example of a pair of highly correlated variables",
+     xlab="standard deviation of arm pitch rotation", 
+     ylab="variance of arm pitch rotation")
+```
+
+Therefore, we excluded all variables:
+
+- with near zero variance
+- with more than 90% of missing values
+- which did not correspond to sensor measurements (name of subject, time of observation ...)
+- with more than 90% correlation with other variables in the dataset 
+
+```{r preprocess,cache=TRUE}
+# remove near zero varianve variables
+nzv <- nearZeroVar(DS)
+DS_nzv <- DS[,-nzv]
+# remove variables with more than 90% missing data
+incompletevar    <- sapply(DS_nzv, function(x) mean(is.na(x))) > 0.9
+DS_nzv_na <- DS_nzv[,incompletevar==FALSE]
+## remove observation identification variables
+DSprocess <- DS_nzv_na[,-(1:5)]
+## remove variables with high correlation with others alrea
+cor <- findCorrelation(cor(DSprocess[,-54]))
+DSprocess <- DSprocess[,-cor]
+```
+
+In order to test our model and predict an out of sample error, we divided our dataset into two new data sets: a training dataset with which to build the model, corresponding to 70% of the original dataset and a test dataset corresponding to the remaining 30%
+
+```{r partition, cache=TRUE}
+intrain <- createDataPartition(y=DSprocess$classe,p=0.7,list = FALSE)
+training <- DSprocess[intrain,]
+testing <- DSprocess[-intrain,]
+
+dim(training)
+dim(testing)
+## assgning the predictors and outcome to x and y variables for efficiency purposes in the model fitting function
+x <- training[,-47]
+y <- training[, 47]
+```
+
+We can see that our preprocessing recipe has reduced the number of variables from 160 to 47, which will allow to reduce the computational time, while also, hopefully, reduce the variation in our results.
+
+## Model Fitting
+
+Due to the computational demands of this project, we have implemented parallel processing 
+
+```{r parallel}
+cluster <- makeCluster(detectCores() - 1)
+registerDoParallel(cluster)
+```
+
+#### Cross-Validation
+
+In this project we have used a k-fold cross validation with 5 folds. This was done, in part, due to the computational time limitations. Other methods like "leave one out" would take more time. Using a small k such as this has the disadvantage of increasing the estimated bias in the result by, at the same time yiels less variance.
+
+```{r crossvariation}
+fitControl <- trainControl(method = "cv",number = 5,allowParallel = TRUE)
+```
+
+#### Random Forest
+
+We first ran a model fit using the random forest method (with the cross validation from before)
+
+```{r random forest,cache=TRUE}
+fitrf <- train(x,y, method="rf",data=training,trControl = fitControl)
+```
+
+#### Linear Discriminant Analysis
+
+Then we fitted a linear discriminant analysis model
+
+```{r lda, cache=TRUE}
+fitlda <- train(x,y, method="lda",data=training,trControl = fitControl)
+```
+
+#### Naive Bayes
+
+Finally, we fitted a naive Bayes model
+
+```{r nb, cache=TRUE,warning=FALSE}
+fitnb <- train(x,y, method="nb",data=training,trControl = fitControl)
+```
+
+```{r close parallel}
+stopCluster(cluster)
+registerDoSEQ()
+```
+
+
+## Results
+
+In order to select the best model, we cheched the confusion matrices of each model in order to see their in-sample accuracy
+
+```{r results}
+confusionMatrix(fitrf)
+confusionMatrix(fitlda)
+confusionMatrix(fitnb)
+```
+
+We can see that the random forest model performed much better than the other two. It was actually the only one with an acceptable accuracy for the objectives we had. Therefore we chose that model to make our predictions.
+
+We used the testing sample to estimate our out of sample error.
+
+```{r error}
+predrf <- predict(fitrf,testing)
+confusionMatrix(predrf,testing$classe)
+```
+
+We therefore estimate an out of sample accuracy of 99.8%.
+
+Finally, we have used loaded the set of 20 observations with which to try and predict the classe of the exercise for each of them, and we obtained the following results:
+
+```{r quiz}
+testset <- read.csv('pml-testing.csv')
+predict(fitrf,testset)
+```
+
+## References
+
+- Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
